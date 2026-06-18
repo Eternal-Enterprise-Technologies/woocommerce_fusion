@@ -85,6 +85,29 @@ def run_sales_order_sync(
 	)
 
 
+@frappe.whitelist()
+def bulk_sync_woocommerce_orders(order_names):
+	"""
+	Sync multiple WooCommerce Orders to ERPNext.
+	Each order is enqueued as a background job.
+	"""
+	if isinstance(order_names, str):
+		order_names = json.loads(order_names)
+
+	if not order_names:
+		frappe.throw(_("No orders selected for sync"))
+
+	for order_name in order_names:
+		frappe.enqueue(
+			run_sales_order_sync,
+			queue="long",
+			woocommerce_order_name=order_name,
+			enqueue=False,
+		)
+
+	return {"enqueued": len(order_names)}
+
+
 def sync_woocommerce_orders_modified_since(date_time_from=None):
 	"""
 	Get list of WooCommerce orders modified since date_time_from
@@ -491,7 +514,9 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		new_sales_order.po_no = new_sales_order.woocommerce_id = wc_order.id
 		new_sales_order.custom_woocommerce_customer_note = wc_order.customer_note
 
-		new_sales_order.woocommerce_status = WC_ORDER_STATUS_MAPPING_REVERSE[wc_order.status]
+		new_sales_order.woocommerce_status = WC_ORDER_STATUS_MAPPING_REVERSE.get(
+			wc_order.status, wc_order.status.replace("-", " ").title()
+		)
 		wc_server = frappe.get_cached_doc("WooCommerce Server", wc_order.woocommerce_server)
 
 		new_sales_order.woocommerce_server = wc_order.woocommerce_server
@@ -679,6 +704,19 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 				).run(as_dict=True)
 
 				found_item = frappe.get_doc("Item", item_codes[0].parent) if item_codes else None
+
+			# If found item is a template (has variants), try to find the default variant
+			if found_item and found_item.has_variants:
+				default_variant = frappe.db.get_value(
+					"Item",
+					{"variant_of": found_item.name, "disabled": 0},
+					"name",
+				)
+				if default_variant:
+					found_item = frappe.get_doc("Item", default_variant)
+				else:
+					# No variant found, use placeholder item instead
+					found_item = create_placeholder_item(new_sales_order)
 
 			rate = item.get("price")
 			# If we are applying a Sales Taxes and Charges Template (as opposed to Actual Tax), then we need to
@@ -933,8 +971,8 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		address.address_line1 = raw_data.get("address_1", "Not Provided")
 		address.address_line2 = raw_data.get("address_2", "Not Provided")
 		address.city = raw_data.get("city", "Not Provided")
-		address.country = frappe.get_value("Country", {"code": raw_data.get("country", "IN").lower()})
-		address.state = raw_data.get("state")
+		address.country = self._get_country(raw_data.get("country", "IN"))
+		address.state = self._get_valid_state(raw_data.get("state"), address.country)
 		address.pincode = raw_data.get("postcode")
 		address.phone = raw_data.get("phone")
 		address.address_title = (
@@ -946,7 +984,10 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		address.is_shipping_address = is_shipping_address
 		address.append("links", {"link_doctype": "Customer", "link_name": customer.name})
 
+		self._set_gst_category(address)
+
 		address.flags.ignore_mandatory = True
+		address.flags.ignore_validate = True
 		address.save()
 
 	def update_address(
@@ -967,20 +1008,143 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		address.address_line1 = raw_data.get("address_1", "Not Provided")
 		address.address_line2 = raw_data.get("address_2", "Not Provided")
 		address.city = raw_data.get("city", "Not Provided")
-		address.country = frappe.get_value("Country", {"code": raw_data.get("country", "IN").lower()})
-		address.state = raw_data.get("state")
+		address.country = self._get_country(raw_data.get("country", "IN"))
+		address.state = self._get_valid_state(raw_data.get("state"), address.country)
 		address.pincode = raw_data.get("postcode")
 		address.phone = raw_data.get("phone")
 		address.address_title = (
-			{customer.customer_name}
+			customer.customer_name
 			if title_convention == "Customer Name only"
 			else f"{customer.name}-{address.address_type}"
 		)
 		address.is_primary_address = is_primary_address
 		address.is_shipping_address = is_shipping_address
 
+		self._set_gst_category(address)
+
 		address.flags.ignore_mandatory = True
+		address.flags.ignore_validate = True
 		address.save()
+
+	@staticmethod
+	def _get_country(country_value: str) -> str:
+		"""
+		Resolve a WooCommerce country value to an ERPNext Country name.
+		Handles both ISO codes (e.g. 'IN') and full names (e.g. 'India').
+		"""
+		if not country_value:
+			country_value = "IN"
+
+		# First try lookup by ISO country code (standard WooCommerce behaviour)
+		country_name = frappe.db.get_value("Country", {"code": country_value.lower()})
+		if country_name:
+			return country_name
+
+		# Fallback: try matching by full country name directly
+		country_name = frappe.db.get_value("Country", {"name": country_value})
+		if country_name:
+			return country_name
+
+		# Last resort: try case-insensitive name match
+		country_name = frappe.db.get_value("Country", {"name": ["like", country_value]})
+		if country_name:
+			return country_name
+
+		# Default to India if nothing matched
+		return "India"
+
+	@staticmethod
+	def _set_gst_category(address):
+		"""
+		Set GST Category on address if india_compliance is installed.
+		Addresses inside India get 'Unregistered', overseas addresses get 'Overseas'.
+		"""
+		if not hasattr(address, "gst_category"):
+			return
+
+		if address.country and address.country != "India":
+			address.gst_category = "Overseas"
+		elif not address.gst_category:
+			address.gst_category = "Unregistered"
+
+	@staticmethod
+	def _get_valid_state(state_value: str, country: str) -> str | None:
+		"""
+		Resolve a WooCommerce state value to a valid ERPNext state name.
+		India Compliance requires exact state names from the predefined list.
+		"""
+		if not state_value or not country:
+			return state_value
+
+		if country != "India":
+			return state_value
+
+		# Try exact match first
+		valid_state = frappe.db.get_value("State", {"name": state_value, "country": "India"})
+		if valid_state:
+			return valid_state
+
+		# Try case-insensitive match
+		valid_state = frappe.db.get_value("State", {"name": ["like", state_value], "country": "India"})
+		if valid_state:
+			return valid_state
+
+		# Common WooCommerce abbreviations/alternate names for Indian states
+		state_aliases = {
+			"AN": "Andaman and Nicobar Islands",
+			"AP": "Andhra Pradesh",
+			"AR": "Arunachal Pradesh",
+			"AS": "Assam",
+			"BR": "Bihar",
+			"CG": "Chhattisgarh",
+			"CH": "Chandigarh",
+			"DD": "Dadra and Nagar Haveli and Daman and Diu",
+			"DL": "Delhi",
+			"GA": "Goa",
+			"GJ": "Gujarat",
+			"HP": "Himachal Pradesh",
+			"HR": "Haryana",
+			"JH": "Jharkhand",
+			"JK": "Jammu and Kashmir",
+			"KA": "Karnataka",
+			"KL": "Kerala",
+			"LA": "Ladakh",
+			"LD": "Lakshadweep",
+			"MH": "Maharashtra",
+			"ML": "Meghalaya",
+			"MN": "Manipur",
+			"MP": "Madhya Pradesh",
+			"MZ": "Mizoram",
+			"NL": "Nagaland",
+			"OD": "Odisha",
+			"OR": "Odisha",
+			"PB": "Punjab",
+			"PY": "Puducherry",
+			"RJ": "Rajasthan",
+			"SK": "Sikkim",
+			"TN": "Tamil Nadu",
+			"TS": "Telangana",
+			"TG": "Telangana",
+			"TR": "Tripura",
+			"UK": "Uttarakhand",
+			"UA": "Uttarakhand",
+			"UP": "Uttar Pradesh",
+			"WB": "West Bengal",
+			# Common alternate spellings
+			"DELHI": "Delhi",
+			"NEW DELHI": "Delhi",
+			"CHATTISGARH": "Chhattisgarh",
+			"ORISSA": "Odisha",
+			"PONDICHERRY": "Puducherry",
+			"UTTARANCHAL": "Uttarakhand",
+		}
+
+		mapped_state = state_aliases.get(state_value.upper().strip())
+		if mapped_state:
+			return mapped_state
+
+		# If nothing matched, return the original value (will rely on flags.ignore_validate)
+		return state_value
 
 
 def get_list_of_wc_orders(
@@ -1117,13 +1281,16 @@ def create_placeholder_item(sales_order: SalesOrder):
 	if not frappe.db.exists("Item", "DELETED_WOOCOMMERCE_PRODUCT"):
 		item = frappe.new_doc("Item")
 		item.item_code = "DELETED_WOOCOMMERCE_PRODUCT"
-		item.item_name = "Deletet WooCommerce Product"
-		item.description = "Deletet WooCommerce Product"
+		item.item_name = "Deleted WooCommerce Product"
+		item.description = "Deleted WooCommerce Product"
 		item.item_group = "All Item Groups"
 		item.stock_uom = wc_server.uom
 		item.is_stock_item = 0
 		item.is_fixed_asset = 0
 		item.opening_stock = 0
+		# Set country_of_origin if the field exists (required by India Compliance)
+		if frappe.get_meta("Item").has_field("country_of_origin"):
+			item.country_of_origin = "India"
 		item.flags.created_by_sync = True
 		item.save()
 	else:
