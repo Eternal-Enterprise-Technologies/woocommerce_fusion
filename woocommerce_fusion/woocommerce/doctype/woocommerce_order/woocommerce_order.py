@@ -34,6 +34,9 @@ WC_ORDER_STATUS_MAPPING = {
 	"Trash": "trash",
 	"Partially Shipped": "partial-shipped",
 	"Dispatched Pickup": "dispatched-pickup",
+	"Return Requested": "return-requested",
+	"Return Approved": "return-approved",
+	"Return Picked Up": "return-picked-up",
 }
 WC_ORDER_STATUS_MAPPING_REVERSE = {v: k for k, v in WC_ORDER_STATUS_MAPPING.items()}
 
