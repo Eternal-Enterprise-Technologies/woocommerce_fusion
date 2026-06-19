@@ -517,6 +517,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		new_sales_order.woocommerce_status = WC_ORDER_STATUS_MAPPING_REVERSE.get(
 			wc_order.status, wc_order.status.replace("-", " ").title()
 		)
+		new_sales_order.order_type = "Shopping Cart"
 		wc_server = frappe.get_cached_doc("WooCommerce Server", wc_order.woocommerce_server)
 
 		new_sales_order.woocommerce_server = wc_order.woocommerce_server
