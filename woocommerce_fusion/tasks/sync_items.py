@@ -237,14 +237,19 @@ class SynchroniseItem(SynchroniseWooCommerce):
 
 	def sync_wc_product_with_erpnext_item(self):
 		"""
-		Syncronise Item between ERPNext and WooCommerce
+		Syncronise Item between ERPNext and WooCommerce.
+		Item creation in ERPNext is controlled by 'Enable Item Creation' setting on WooCommerce Server.
 		"""
 		if self.item and not self.woocommerce_product:
 			# create missing product in WooCommerce
 			self.create_woocommerce_product(self.item)
 		elif self.woocommerce_product and not self.item:
-			# create missing item in ERPNext
-			self.create_item(self.woocommerce_product)
+			# Only create item in ERPNext if 'Enable Item Creation' is checked on the WooCommerce Server
+			wc_server = frappe.get_cached_doc(
+				"WooCommerce Server", self.woocommerce_product.woocommerce_server
+			)
+			if wc_server.enable_item_creation:
+				self.create_item(self.woocommerce_product)
 		elif self.item and self.woocommerce_product:
 			# both exist, check sync hash
 			if (
@@ -294,6 +299,11 @@ class SynchroniseItem(SynchroniseWooCommerce):
 		# Update properties
 		if wc_product.woocommerce_name != item.item.item_name:
 			wc_product.woocommerce_name = item.item.item_name
+			wc_product_dirty = True
+
+		# Ensure woocommerce_name is not empty (variations may have blank name)
+		if not wc_product.woocommerce_name:
+			wc_product.woocommerce_name = item.item.item_name or item.item.item_code
 			wc_product_dirty = True
 
 		product_fields_changed, wc_product = self.set_product_fields(wc_product, item)

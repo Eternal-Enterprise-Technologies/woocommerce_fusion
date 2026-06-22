@@ -122,3 +122,48 @@ def get_woocommerce_order(woocommerce_server, woocommerce_id):
 	wc_order = frappe.get_doc({"doctype": "WooCommerce Order", "name": wc_order_name})
 	wc_order.load_from_db()
 	return wc_order
+
+
+@frappe.whitelist()
+def recalculate_taxes_and_charges(sales_order_name: str):
+	"""
+	Recalculate taxes and charges on a Sales Order using ERPNext / India Compliance
+	standard tax calculation logic.
+
+	This clears existing tax rows and re-applies taxes based on:
+	- Customer billing address state vs Company state
+	- Item Tax Templates on each item
+	- Tax Category rules
+	"""
+	so = frappe.get_doc("Sales Order", sales_order_name)
+
+	if so.docstatus != 0:
+		frappe.throw(_("Taxes can only be recalculated on Draft Sales Orders"))
+
+	# Clear only GST tax rows (On Net Total type), preserve Actual rows (shipping/freight)
+	actual_tax_rows = [tax for tax in so.taxes if tax.charge_type == "Actual"]
+	so.taxes = []
+	so.taxes_and_charges = None
+	so.tax_category = None
+	so.place_of_supply = None
+	so.company_gstin = None
+	so.billing_address_gstin = None
+
+	# Let ERPNext / India Compliance determine the correct tax template and calculate taxes
+	so.set_missing_lead_customer_details()
+	so.calculate_taxes_and_totals()
+
+	# Re-add the preserved Actual tax rows (shipping/freight charges)
+	for row in actual_tax_rows:
+		so.append("taxes", {
+			"charge_type": row.charge_type,
+			"account_head": row.account_head,
+			"description": row.description,
+			"tax_amount": row.tax_amount,
+			"cost_center": row.cost_center,
+		})
+
+	so.flags.ignore_mandatory = True
+	so.save()
+
+	return "ok"
