@@ -153,6 +153,15 @@ def recalculate_taxes_and_charges(sales_order_name: str):
 	so.set_missing_lead_customer_details()
 	so.calculate_taxes_and_totals()
 
+	# Fallback: if India Compliance didn't set a template (e.g. missing Company GSTIN),
+	# use the template configured on WooCommerce Server
+	if not so.taxes_and_charges and so.woocommerce_server:
+		wc_server = frappe.get_cached_doc("WooCommerce Server", so.woocommerce_server)
+		if wc_server.sales_taxes_and_charges_template:
+			so.taxes_and_charges = wc_server.sales_taxes_and_charges_template
+			so.set_taxes()
+			so.calculate_taxes_and_totals()
+
 	# Re-add the preserved Actual tax rows (shipping/freight charges)
 	for row in actual_tax_rows:
 		so.append("taxes", {
@@ -162,6 +171,9 @@ def recalculate_taxes_and_charges(sales_order_name: str):
 			"tax_amount": row.tax_amount,
 			"cost_center": row.cost_center,
 		})
+
+	# Recalculate totals to include the re-added Actual rows
+	so.calculate_taxes_and_totals()
 
 	so.flags.ignore_mandatory = True
 	so.save()
