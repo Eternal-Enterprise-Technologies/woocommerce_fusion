@@ -237,14 +237,19 @@ class SynchroniseItem(SynchroniseWooCommerce):
 
 	def sync_wc_product_with_erpnext_item(self):
 		"""
-		Syncronise Item between ERPNext and WooCommerce
+		Syncronise Item between ERPNext and WooCommerce.
+		Item creation in ERPNext is controlled by 'Enable Item Creation' setting on WooCommerce Server.
 		"""
 		if self.item and not self.woocommerce_product:
 			# create missing product in WooCommerce
 			self.create_woocommerce_product(self.item)
 		elif self.woocommerce_product and not self.item:
-			# create missing item in ERPNext
-			self.create_item(self.woocommerce_product)
+			# Only create item in ERPNext if 'Enable Item Creation' is checked on the WooCommerce Server
+			wc_server = frappe.get_cached_doc(
+				"WooCommerce Server", self.woocommerce_product.woocommerce_server
+			)
+			if wc_server.enable_item_creation:
+				self.create_item(self.woocommerce_product)
 		elif self.item and self.woocommerce_product:
 			# both exist, check sync hash
 			if (
@@ -296,6 +301,11 @@ class SynchroniseItem(SynchroniseWooCommerce):
 			wc_product.woocommerce_name = item.item.item_name
 			wc_product_dirty = True
 
+		# Ensure woocommerce_name is not empty (variations may have blank name)
+		if not wc_product.woocommerce_name:
+			wc_product.woocommerce_name = item.item.item_name or item.item.item_code
+			wc_product_dirty = True
+
 		product_fields_changed, wc_product = self.set_product_fields(wc_product, item)
 		if product_fields_changed:
 			wc_product_dirty = True
@@ -328,10 +338,12 @@ class SynchroniseItem(SynchroniseWooCommerce):
 				# Handle attributes
 				for row in item.item.attributes:
 					item_attribute = frappe.get_doc("Item Attribute", row.attribute)
+					# Reverse map ERPNext attribute name to WooCommerce attribute name
+					wc_attr_name = self.ERPNEXT_TO_WC_ATTRIBUTE_MAP.get(row.attribute, row.attribute)
 					wc_product_attributes.append(
 						{
-							"name": row.attribute,
-							"slug": row.attribute.lower().replace(" ", "_"),
+							"name": wc_attr_name,
+							"slug": wc_attr_name.lower().replace(" ", "_"),
 							"visible": True,
 							"variation": True,
 							"options": [
@@ -352,8 +364,9 @@ class SynchroniseItem(SynchroniseWooCommerce):
 				# Handle attributes
 				wc_product_attributes = [
 					{
-						"name": row.attribute,
-						"slug": row.attribute.lower().replace(" ", "_"),
+						# Reverse map ERPNext attribute name to WooCommerce attribute name
+						"name": self.ERPNEXT_TO_WC_ATTRIBUTE_MAP.get(row.attribute, row.attribute),
+						"slug": self.ERPNEXT_TO_WC_ATTRIBUTE_MAP.get(row.attribute, row.attribute).lower().replace(" ", "_"),
 						"option": row.attribute_value,
 					}
 					for row in item.item.attributes
@@ -400,7 +413,8 @@ class SynchroniseItem(SynchroniseWooCommerce):
 			wc_attributes = json.loads(wc_product.attributes)
 			for wc_attribute in wc_attributes:
 				row = item.append("attributes")
-				row.attribute = wc_attribute["name"]
+				# Map WooCommerce attribute name to ERPNext attribute name
+				row.attribute = self.WC_TO_ERPNEXT_ATTRIBUTE_MAP.get(wc_attribute["name"], wc_attribute["name"])
 				if wc_product.type == "variation":
 					row.attribute_value = wc_attribute["option"]
 
@@ -451,20 +465,35 @@ class SynchroniseItem(SynchroniseWooCommerce):
 
 		self.set_sync_hash()
 
+	# Mapping of WooCommerce attribute names to ERPNext Item Attribute names
+	WC_TO_ERPNEXT_ATTRIBUTE_MAP = {
+		"Colour": "Elle Plating Tone",
+		"Dimension": "Size",
+	}
+
+	# Reverse mapping: ERPNext Item Attribute names to WooCommerce attribute names
+	ERPNEXT_TO_WC_ATTRIBUTE_MAP = {v: k for k, v in WC_TO_ERPNEXT_ATTRIBUTE_MAP.items()}
+
 	def create_or_update_item_attributes(self, wc_product: WooCommerceProduct):
 		"""
-		Create or update an Item Attribute
+		Create or update an Item Attribute.
+		Existing attribute values are preserved and new values from WooCommerce are appended.
+		WooCommerce attribute names are mapped to ERPNext attribute names using WC_TO_ERPNEXT_ATTRIBUTE_MAP.
 		"""
 		if wc_product.attributes:
 			wc_attributes = json.loads(wc_product.attributes)
 			for wc_attribute in wc_attributes:
-				if frappe.db.exists("Item Attribute", wc_attribute["name"]):
+				# Map WooCommerce attribute name to ERPNext attribute name
+				wc_attr_name = wc_attribute["name"]
+				erpnext_attr_name = self.WC_TO_ERPNEXT_ATTRIBUTE_MAP.get(wc_attr_name, wc_attr_name)
+
+				if frappe.db.exists("Item Attribute", erpnext_attr_name):
 					# Get existing Item Attribute
-					item_attribute = frappe.get_doc("Item Attribute", wc_attribute["name"])
+					item_attribute = frappe.get_doc("Item Attribute", erpnext_attr_name)
 				else:
 					# Create a Item Attribute
 					item_attribute = frappe.get_doc(
-						{"doctype": "Item Attribute", "attribute_name": wc_attribute["name"]}
+						{"doctype": "Item Attribute", "attribute_name": erpnext_attr_name}
 					)
 
 				# Get list of attribute options.
@@ -474,14 +503,14 @@ class SynchroniseItem(SynchroniseWooCommerce):
 					wc_attribute["options"] if wc_product.type == "variable" else [wc_attribute["option"]]
 				)
 
-				# If no attributes values exist, or attribute values exist already but are different, remove and update them
-				if len(item_attribute.item_attribute_values) == 0 or (
-					len(item_attribute.item_attribute_values) > 0
-					and set(options)
-					!= set([val.attribute_value for val in item_attribute.item_attribute_values])
-				):
-					item_attribute.item_attribute_values = []
-					for option in options:
+				# Get existing attribute values for comparison
+				existing_values = set(
+					val.attribute_value for val in item_attribute.item_attribute_values
+				)
+
+				# Append only new values that don't already exist
+				for option in options:
+					if option not in existing_values:
 						row = item_attribute.append("item_attribute_values")
 						row.attribute_value = option
 						row.abbr = option.replace(" ", "")

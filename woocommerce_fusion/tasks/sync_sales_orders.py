@@ -511,7 +511,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		new_sales_order = frappe.new_doc("Sales Order")
 		self.sales_order = new_sales_order
 		new_sales_order.customer = customer_docname
-		new_sales_order.po_no = new_sales_order.woocommerce_id = wc_order.id
+		new_sales_order.po_no = new_sales_order.woocommerce_id = cstr(wc_order.id)
 		new_sales_order.custom_woocommerce_customer_note = wc_order.customer_note
 
 		new_sales_order.woocommerce_status = WC_ORDER_STATUS_MAPPING_REVERSE.get(
@@ -553,6 +553,45 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 
 		self.set_items_in_sales_order(new_sales_order, wc_order)
 		self.set_fee_lines_in_sales_order(new_sales_order, wc_order)
+
+		# Let ERPNext / India Compliance calculate taxes automatically based on
+		# customer address, company address, and tax rules (CGST+SGST or IGST).
+		# We call this BEFORE insert so that taxes_and_charges template and tax rows
+		# are populated. Fields must be set to None (not "") for update_if_missing to work.
+		new_sales_order.taxes = []
+		new_sales_order.taxes_and_charges = None
+		new_sales_order.tax_category = None
+		new_sales_order.place_of_supply = None
+		new_sales_order.company_gstin = None
+		new_sales_order.billing_address_gstin = None
+		new_sales_order.set_missing_lead_customer_details()
+		new_sales_order.calculate_taxes_and_totals()
+
+		# Fallback: if India Compliance didn't set a template (e.g. missing Company GSTIN),
+		# use the template configured on WooCommerce Server
+		if not new_sales_order.taxes_and_charges and wc_server.sales_taxes_and_charges_template:
+			new_sales_order.taxes_and_charges = wc_server.sales_taxes_and_charges_template
+			new_sales_order.set_taxes()
+			new_sales_order.calculate_taxes_and_totals()
+
+		# Now add shipping/freight charges on top of the calculated taxes
+		wc_server_for_shipping = frappe.get_cached_doc("WooCommerce Server", wc_order.woocommerce_server)
+		if not new_sales_order.shipping_rule:
+			if wc_server_for_shipping.f_n_f_tax_account:
+				add_tax_details(
+					new_sales_order,
+					wc_order.shipping_tax,
+					"Shipping Tax",
+					wc_server_for_shipping.f_n_f_tax_account,
+				)
+			if wc_server_for_shipping.f_n_f_account:
+				add_tax_details(
+					new_sales_order,
+					wc_order.shipping_total,
+					"Shipping Total",
+					wc_server_for_shipping.f_n_f_account,
+				)
+
 		new_sales_order.flags.ignore_mandatory = True
 		new_sales_order.flags.created_by_sync = True
 		new_sales_order.insert()
@@ -661,17 +700,40 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 
 	def create_missing_items(self, wc_order, items_list, woocommerce_site):
 		"""
-		Searching for items linked to multiple WooCommerce sites
+		Searching for items linked to multiple WooCommerce sites.
+		Item creation in ERPNext is controlled by 'Enable Item Creation' setting on WooCommerce Server.
 		"""
+		wc_server = frappe.get_cached_doc("WooCommerce Server", woocommerce_site)
+
 		for item_data in items_list:
 			item_woo_com_id = cstr(item_data.get("variation_id") or item_data.get("product_id"))
 
 			# Deleted items will have a "0" for variation_id/product_id
 			if item_woo_com_id != "0":
-				woocommerce_product_name = generate_woocommerce_record_name_from_domain_and_id(
-					woocommerce_site, item_woo_com_id
-				)
-				run_item_sync(woocommerce_product_name=woocommerce_product_name)
+				if wc_server.enable_item_creation:
+					# Auto-create items if setting is enabled
+					woocommerce_product_name = generate_woocommerce_record_name_from_domain_and_id(
+						woocommerce_site, item_woo_com_id
+					)
+					run_item_sync(woocommerce_product_name=woocommerce_product_name)
+				else:
+					# Only sync if item already exists in ERPNext
+					iws = frappe.qb.DocType("Item WooCommerce Server")
+					existing = (
+						frappe.qb.from_(iws)
+						.where(
+							(iws.woocommerce_id == item_woo_com_id)
+							& (iws.woocommerce_server == woocommerce_site)
+						)
+						.select(iws.parent)
+						.limit(1)
+					).run()
+
+					if existing:
+						woocommerce_product_name = generate_woocommerce_record_name_from_domain_and_id(
+							woocommerce_site, item_woo_com_id
+						)
+						run_item_sync(woocommerce_product_name=woocommerce_product_name)
 
 	def set_items_in_sales_order(self, new_sales_order, wc_order):
 		"""
@@ -706,6 +768,10 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 
 				found_item = frappe.get_doc("Item", item_codes[0].parent) if item_codes else None
 
+			# If item not found in ERPNext, use placeholder
+			if not found_item:
+				found_item = create_placeholder_item(new_sales_order)
+
 			# If found item is a template (has variants), try to find the default variant
 			if found_item and found_item.has_variants:
 				default_variant = frappe.db.get_value(
@@ -720,15 +786,9 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 					found_item = create_placeholder_item(new_sales_order)
 
 			rate = item.get("price")
-			# If we are applying a Sales Taxes and Charges Template (as opposed to Actual Tax), then we need to
-			# determine if the item price should include tax or not
-			if wc_server.enable_tax_lines_sync and not wc_server.use_actual_tax_type:
-				tax_template = frappe.get_cached_doc(
-					"Sales Taxes and Charges Template",
-					wc_server.sales_taxes_and_charges_template,
-				)
-				if tax_template.taxes[0].included_in_print_rate:
-					rate = get_tax_inc_price_for_woocommerce_line_item(item)
+			# If prices include tax in WooCommerce, calculate tax-inclusive rate
+			if wc_order.prices_include_tax:
+				rate = get_tax_inc_price_for_woocommerce_line_item(item)
 
 			new_sales_order_line = {
 				"item_code": found_item.name,
@@ -747,37 +807,6 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			new_sales_order.append(
 				"items",
 				new_sales_order_line,
-			)
-
-			if wc_server.enable_tax_lines_sync:
-				if not wc_server.use_actual_tax_type:
-					new_sales_order.taxes_and_charges = wc_server.sales_taxes_and_charges_template
-
-					# Trigger taxes calculation
-					new_sales_order.set_missing_lead_customer_details()
-				else:
-					ordered_items_tax = item.get("total_tax")
-					add_tax_details(
-						new_sales_order,
-						ordered_items_tax,
-						"Ordered Item tax",
-						wc_server.tax_account,
-					)
-
-		# If a Shipping Rule is added, shipping charges will be determined by the Shipping Rule. If not, then
-		# get it from the WooCommerce Order
-		if not new_sales_order.shipping_rule:
-			add_tax_details(
-				new_sales_order,
-				wc_order.shipping_tax,
-				"Shipping Tax",
-				wc_server.f_n_f_tax_account,
-			)
-			add_tax_details(
-				new_sales_order,
-				wc_order.shipping_total,
-				"Shipping Total",
-				wc_server.f_n_f_account,
 			)
 
 		# Handle scenario where Woo Order has no items, then manually set the total

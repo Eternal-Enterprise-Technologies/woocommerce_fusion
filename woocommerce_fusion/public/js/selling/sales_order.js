@@ -1,5 +1,44 @@
 frappe.ui.form.on("Sales Order", {
   refresh: function (frm) {
+    // Inline "Calculate Taxes & Charges" button above the taxes table (only for saved Draft orders)
+    // Remove existing button first to prevent duplicates on reload
+    frm.$wrapper.find('.calc-taxes-btn').remove();
+    if (frm.doc.docstatus === 0 && !frm.is_new()) {
+      const f = frm.fields_dict && frm.fields_dict.taxes;
+      if (f && f.$wrapper) {
+        const $btn = $(
+          '<button type="button" class="btn btn-xs btn-default calc-taxes-btn" style="margin-bottom:10px;">' +
+           __('Calculate Taxes & Charges') +
+          '</button>'
+        );
+        $btn.on('click', () => {
+          frappe.dom.freeze(__("Calculating Taxes & Charges..."));
+          frappe.call({
+            method: "woocommerce_fusion.overrides.selling.sales_order.recalculate_taxes_and_charges",
+            args: { sales_order_name: frm.doc.name },
+            callback: function (r) {
+              frappe.dom.unfreeze();
+              if (r.message === "ok") {
+                frappe.show_alert({
+                  message: __("Taxes & Charges recalculated successfully"),
+                  indicator: "green",
+                }, 5);
+                frm.reload_doc();
+              }
+            },
+            error: function () {
+              frappe.dom.unfreeze();
+              frappe.show_alert({
+                message: __("Error calculating taxes. See Error Log."),
+                indicator: "red",
+              }, 5);
+            },
+          });
+        });
+        f.$wrapper.before($btn);
+      }
+    }
+
     // Add a custom button to navigate to WooCommerce and open this order
     if (frm.doc.woocommerce_id) {
       frm.add_custom_button(
