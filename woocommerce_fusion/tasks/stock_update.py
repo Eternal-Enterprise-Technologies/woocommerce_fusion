@@ -44,7 +44,7 @@ def update_stock_levels_for_all_enabled_items_in_background():
 	while current_page_length == 500:
 		items = frappe.db.get_all(
 			doctype="Item",
-			filters={"disabled": 0},
+			filters={"disabled": 0, "parent_item_group": "ELLE"},
 			fields=["name"],
 			start=start,
 			page_length=500,
