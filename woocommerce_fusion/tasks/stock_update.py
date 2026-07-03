@@ -103,6 +103,7 @@ def update_stock_levels_on_woocommerce_site(item_code: str):
 
 				# Sum all quantities from select warehouses and round the total down (WooCommerce API doesn't accept float values)
 				data_to_post = {
+					"manage_stock": True,
 					"stock_quantity": math.floor(
 						sum(
 							bin.actual_qty
