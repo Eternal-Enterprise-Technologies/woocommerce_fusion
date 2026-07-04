@@ -644,6 +644,32 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			"Customer", {"woocommerce_identifier": customer_identifier}, "name"
 		)
 
+		# If not found by woocommerce_identifier, try to match by email in Contact
+		# or by customer_name to avoid duplicates with manually created customers
+		if not existing_customer and customer_woo_com_email:
+			# Try to find customer linked to a Contact with matching email
+			contact_links = frappe.get_all(
+				"Dynamic Link",
+				filters={
+					"link_doctype": "Customer",
+					"parenttype": "Contact",
+				},
+				fields=["link_name", "parent"],
+			)
+			for link in contact_links:
+				contact_email = frappe.db.get_value("Contact Email", {"parent": link.parent}, "email_id")
+				if contact_email and contact_email.lower() == customer_woo_com_email.lower():
+					existing_customer = link.link_name
+					break
+
+		# Fallback: match by customer_name
+		if not existing_customer:
+			match_name = company_name if company_name else individual_name
+			if match_name:
+				existing_customer = frappe.get_value(
+					"Customer", {"customer_name": match_name}, "name"
+				)
+
 		if not existing_customer:
 			# Create Customer
 			customer = frappe.new_doc("Customer")
