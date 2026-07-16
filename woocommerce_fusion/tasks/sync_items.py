@@ -270,9 +270,6 @@ class SynchroniseItem(SynchroniseWooCommerce):
 		Update the ERPNext Item with fields from it's corresponding WooCommerce Product
 		"""
 		item_dirty = False
-		if item.item.item_name != woocommerce_product.woocommerce_name:
-			item.item.item_name = woocommerce_product.woocommerce_name
-			item_dirty = True
 
 		fields_updated, item.item = self.set_item_fields(item=item.item)
 
