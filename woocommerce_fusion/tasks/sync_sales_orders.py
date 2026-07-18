@@ -268,6 +268,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 
 			if sales_order.custom_woocommerce_customer_note != woocommerce_order.customer_note:
 				sales_order.custom_woocommerce_customer_note = woocommerce_order.customer_note
+				so_dirty = True
 
 			# Update the payment_method_title field if necessary, use the payment method ID
 			# if the title field is too long
