@@ -281,6 +281,12 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 				sales_order.woocommerce_payment_method = payment_method
 				so_dirty = True
 
+			# Update the payment type (e.g. COD Payment, Prepaid Payment)
+			wc_payment_type = woocommerce_order.payment_method_title or ""
+			if sales_order.custom_woocommerce_payment_type != wc_payment_type:
+				sales_order.custom_woocommerce_payment_type = wc_payment_type
+				so_dirty = True
+
 			if not sales_order.woocommerce_payment_entry:
 				if self.create_and_link_payment_entry(woocommerce_order, sales_order):
 					so_dirty = True
@@ -529,6 +535,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			else wc_order.payment_method
 		)
 		new_sales_order.woocommerce_payment_method = payment_method
+		new_sales_order.custom_woocommerce_payment_type = wc_order.payment_method_title or ""
 		created_date = wc_order.date_created.split("T")
 		new_sales_order.transaction_date = created_date[0]
 		delivery_after = wc_server.delivery_after_days or 7
