@@ -819,7 +819,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 					# No variant found, use placeholder item instead
 					found_item = create_placeholder_item(new_sales_order)
 
-			rate = item.get("price")
+			rate = float(item.get("total")) / float(item.get("quantity")) if float(item.get("quantity")) else 0
 			# If prices include tax in WooCommerce, calculate tax-inclusive rate
 			if wc_order.prices_include_tax:
 				rate = get_tax_inc_price_for_woocommerce_line_item(item)
@@ -1329,10 +1329,10 @@ def add_tax_details(sales_order, price, desc, tax_account_head):
 
 def get_tax_inc_price_for_woocommerce_line_item(line_item: dict):
 	"""
-	WooCommerce's Line Item "price" field will always show the tax excluding amount.
-	This function calculates the tax inclusive rate for an item
+	WooCommerce's Line Item "total" field shows the actual line amount excluding tax (after discounts).
+	This function calculates the tax inclusive rate for an item using total + total_tax.
 	"""
-	return (float(line_item.get("subtotal")) + float(line_item.get("subtotal_tax"))) / float(
+	return (float(line_item.get("total")) + float(line_item.get("total_tax"))) / float(
 		line_item.get("quantity")
 	)
 
