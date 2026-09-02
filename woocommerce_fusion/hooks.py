@@ -150,12 +150,16 @@ scheduler_events = {
 	"daily_long": [
 		"woocommerce_fusion.tasks.sync_item_prices.run_item_price_sync_in_background",
 	],
-	"cron": {
-		"*/30 * * * *": [
-			"woocommerce_fusion.tasks.stock_update.update_stock_levels_for_all_enabled_items_in_background",
-			"woocommerce_fusion.tasks.sync_sales_orders.sync_woocommerce_orders_modified_since",
-		],
-	},
+	"hourly": [
+		"woocommerce_fusion.tasks.stock_update.update_stock_levels_for_all_enabled_items_in_background",
+		"woocommerce_fusion.tasks.sync_sales_orders.sync_woocommerce_orders_modified_since",
+	],
+	# "cron": {
+	# 	"*/30 * * * *": [
+	# 		"woocommerce_fusion.tasks.stock_update.update_stock_levels_for_all_enabled_items_in_background",
+	# 		"woocommerce_fusion.tasks.sync_sales_orders.sync_woocommerce_orders_modified_since",
+	# 	],
+	# },
 	# 	"monthly": [
 	# 		"woocommerce_fusion.tasks.monthly"
 	# 	],
