@@ -682,6 +682,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			# Create Customer
 			customer = frappe.new_doc("Customer")
 			customer.woocommerce_identifier = customer_identifier
+			customer.customer_group = "E-Commerce"
 
 			if company_name:
 				if company_name.lower() in ["private", "pvt"]:
