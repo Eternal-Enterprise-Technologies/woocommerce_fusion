@@ -720,6 +720,14 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 				else find_existing_customer(customer_woo_com_email, wc_server)
 			)
 
+			if not linked_customer:
+				# Fallback: match by customer_name
+				match_name = company_name if company_name else individual_name
+				if match_name:
+					linked_customer = frappe.get_value(
+						"Customer", {"customer_name": match_name}, "name"
+					)
+
 		if linked_customer:
 			# Attach to the existing account, leaving its own details untouched
 			customer = frappe.get_doc("Customer", linked_customer)
