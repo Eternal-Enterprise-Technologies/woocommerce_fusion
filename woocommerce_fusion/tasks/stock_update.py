@@ -42,18 +42,20 @@ def update_stock_levels_for_all_enabled_items_in_background():
 	erpnext_items = []
 	current_page_length = 500
 	start = 0
-	filters = (
-		{}
-		if frappe.db.exists(
-			"WooCommerce Server",
-			{
-				"enable_sync": 1,
-				"enable_stock_level_synchronisation": 1,
-				"push_zero_stock_for_disabled_items": 1,
-			},
-		)
-		else {"disabled": 0}
-	)
+
+	filters = {
+		"parent_item_group": "ELLE",
+	}
+
+	if not frappe.db.exists(
+		"WooCommerce Server",
+		{
+			"enable_sync": 1,
+			"enable_stock_level_synchronisation": 1,
+			"push_zero_stock_for_disabled_items": 1,
+		},
+	):
+		filters["disabled"] = 0
 
 	# Get all items, 500 records at a time
 	while current_page_length == 500:
