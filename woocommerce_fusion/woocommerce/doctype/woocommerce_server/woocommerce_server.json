@@ -73,6 +73,7 @@
   "tax_account_for_order_fee_lines",
   "tab_items",
   "item_section",
+  "enable_item_creation",
   "name_by",
   "match_items_by_sku",
   "enable_image_sync",
@@ -457,6 +458,13 @@
    "fieldtype": "Section Break"
   },
   {
+   "default": "0",
+   "description": "When enabled, WooCommerce products will be automatically created as Items in ERPNext during sync. When disabled, only existing linked items will be synced.",
+   "fieldname": "enable_item_creation",
+   "fieldtype": "Check",
+   "label": "Enable Item Creation"
+  },
+  {
    "fieldname": "item_stock_section",
    "fieldtype": "Section Break",
    "label": "Item Stock Levels"
@@ -715,7 +723,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-06-18 15:20:52.859238",
+ "modified": "2026-10-20 13:09:52.859238",
  "modified_by": "Administrator",
  "module": "WooCommerce",
  "name": "WooCommerce Server",

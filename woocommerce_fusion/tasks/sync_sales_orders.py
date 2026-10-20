@@ -107,6 +107,30 @@ def run_sales_order_sync(
 	)
 
 
+@frappe.whitelist()
+def bulk_sync_woocommerce_orders(order_names):
+	"""
+	Sync multiple WooCommerce Orders to ERPNext.
+	Each order is enqueued as a background job.
+	"""
+	if isinstance(order_names, str):
+		order_names = json.loads(order_names)
+
+	if not order_names:
+		frappe.throw(_("No orders selected for sync"))
+
+	for order_name in order_names:
+		frappe.enqueue(
+			run_sales_order_sync,
+			queue="long",
+			woocommerce_order_name=order_name,
+			enqueue=False,
+		)
+
+	return {"enqueued": len(order_names)}
+
+
+
 def sync_woocommerce_orders_modified_since(date_time_from=None):
 	"""
 	Get list of WooCommerce orders modified since date_time_from
@@ -288,6 +312,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 
 			if sales_order.custom_woocommerce_customer_note != woocommerce_order.customer_note:
 				sales_order.custom_woocommerce_customer_note = woocommerce_order.customer_note
+				so_dirty = True
 
 			# Update the payment_method_title field if necessary, use the payment method ID
 			# if the title field is too long
@@ -298,6 +323,12 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			)
 			if sales_order.woocommerce_payment_method != payment_method:
 				sales_order.woocommerce_payment_method = payment_method
+				so_dirty = True
+
+			# Update the payment type (e.g. COD Payment, Prepaid Payment)
+			wc_payment_type = woocommerce_order.payment_method_title or ""
+			if sales_order.custom_woocommerce_payment_type != wc_payment_type:
+				sales_order.custom_woocommerce_payment_type = wc_payment_type
 				so_dirty = True
 
 			if not sales_order.woocommerce_payment_entry:
@@ -547,12 +578,15 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			price_list := get_customer_selling_price_list(customer_docname, wc_order.currency)
 		):
 			new_sales_order.selling_price_list = price_list
-		new_sales_order.po_no = new_sales_order.woocommerce_id = wc_order.id
+		new_sales_order.po_no = new_sales_order.woocommerce_id = cstr(wc_order.id)
 		# Carry the customer-facing WooCommerce order number for autonaming
 		new_sales_order.flags.woocommerce_number = wc_order.get("number")
 		new_sales_order.custom_woocommerce_customer_note = wc_order.customer_note
 
-		new_sales_order.woocommerce_status = WC_ORDER_STATUS_MAPPING_REVERSE[wc_order.status]
+		new_sales_order.woocommerce_status = WC_ORDER_STATUS_MAPPING_REVERSE.get(
+			wc_order.status, wc_order.status.replace("-", " ").title()
+		)
+		new_sales_order.order_type = "Shopping Cart"
 		wc_server = frappe.get_cached_doc("WooCommerce Server", wc_order.woocommerce_server)
 
 		new_sales_order.woocommerce_server = wc_order.woocommerce_server
@@ -563,6 +597,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			else wc_order.payment_method
 		)
 		new_sales_order.woocommerce_payment_method = payment_method
+		new_sales_order.custom_woocommerce_payment_type = wc_order.payment_method_title or ""
 		created_date = wc_order.date_created.split("T")
 		new_sales_order.transaction_date = created_date[0]
 		delivery_after = wc_server.delivery_after_days or 7
@@ -588,6 +623,45 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 
 		self.set_items_in_sales_order(new_sales_order, wc_order)
 		self.set_fee_lines_in_sales_order(new_sales_order, wc_order)
+
+# Let ERPNext / India Compliance calculate taxes automatically based on
+		# customer address, company address, and tax rules (CGST+SGST or IGST).
+		# We call this BEFORE insert so that taxes_and_charges template and tax rows
+		# are populated. Fields must be set to None (not "") for update_if_missing to work.
+		new_sales_order.taxes = []
+		new_sales_order.taxes_and_charges = None
+		new_sales_order.tax_category = None
+		new_sales_order.place_of_supply = None
+		new_sales_order.company_gstin = None
+		new_sales_order.billing_address_gstin = None
+		new_sales_order.set_missing_lead_customer_details()
+		new_sales_order.calculate_taxes_and_totals()
+
+		# Fallback: if India Compliance didn't set a template (e.g. missing Company GSTIN),
+		# use the template configured on WooCommerce Server
+		if not new_sales_order.taxes_and_charges and wc_server.sales_taxes_and_charges_template:
+			new_sales_order.taxes_and_charges = wc_server.sales_taxes_and_charges_template
+			new_sales_order.set_taxes()
+			new_sales_order.calculate_taxes_and_totals()
+
+		# Now add shipping/freight charges on top of the calculated taxes
+		wc_server_for_shipping = frappe.get_cached_doc("WooCommerce Server", wc_order.woocommerce_server)
+		if not new_sales_order.shipping_rule:
+			if wc_server_for_shipping.f_n_f_tax_account:
+				add_tax_details(
+					new_sales_order,
+					wc_order.shipping_tax,
+					"Shipping Tax",
+					wc_server_for_shipping.f_n_f_tax_account,
+				)
+			if wc_server_for_shipping.f_n_f_account:
+				add_tax_details(
+					new_sales_order,
+					wc_order.shipping_total,
+					"Shipping Total",
+					wc_server_for_shipping.f_n_f_account,
+				)
+
 		new_sales_order.flags.ignore_mandatory = True
 		new_sales_order.flags.created_by_sync = True
 		new_sales_order.insert()
@@ -654,6 +728,14 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 				else find_existing_customer(customer_woo_com_email, wc_server)
 			)
 
+			if not linked_customer:
+				# Fallback: match by customer_name
+				match_name = company_name if company_name else individual_name
+				if match_name:
+					linked_customer = frappe.get_value(
+						"Customer", {"customer_name": match_name}, "name"
+					)
+
 		if linked_customer:
 			# Attach to the existing account, leaving its own details untouched
 			customer = frappe.get_doc("Customer", linked_customer)
@@ -661,6 +743,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			# Create Customer
 			customer = frappe.new_doc("Customer")
 			customer.woocommerce_identifier = customer_identifier
+			customer.customer_group = "E-Commerce"
 
 			if company_name:
 				if company_name.lower() in ["private", "pvt"]:
@@ -714,17 +797,40 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 
 	def create_missing_items(self, wc_order, items_list, woocommerce_site):
 		"""
-		Searching for items linked to multiple WooCommerce sites
+		Searching for items linked to multiple WooCommerce sites.
+		Item creation in ERPNext is controlled by 'Enable Item Creation' setting on WooCommerce Server.
 		"""
+		wc_server = frappe.get_cached_doc("WooCommerce Server", woocommerce_site)
 		for item_data in items_list:
 			item_woo_com_id = cstr(item_data.get("variation_id") or item_data.get("product_id"))
 
 			# Deleted items will have a "0" for variation_id/product_id
 			if item_woo_com_id != "0":
-				woocommerce_product_name = generate_woocommerce_record_name_from_domain_and_id(
-					woocommerce_site, item_woo_com_id
-				)
-				run_item_sync(woocommerce_product_name=woocommerce_product_name)
+				run_item_sync = False
+				if wc_server.enable_item_creation:
+					# Auto-create items if setting is enabled
+					run_item_sync = True
+				else:
+					# Only sync if item already exists in ERPNext
+					iws = frappe.qb.DocType("Item WooCommerce Server")
+					existing = (
+						frappe.qb.from_(iws)
+						.where(
+							(iws.woocommerce_id == item_woo_com_id)
+							& (iws.woocommerce_server == woocommerce_site)
+						)
+						.select(iws.parent)
+						.limit(1)
+					).run()
+
+					if existing:
+						run_item_sync = True
+
+				if run_item_sync:
+					woocommerce_product_name = generate_woocommerce_record_name_from_domain_and_id(
+						woocommerce_site, item_woo_com_id
+					)
+					run_item_sync(woocommerce_product_name=woocommerce_product_name)
 
 	def set_items_in_sales_order(self, new_sales_order, wc_order):
 		"""
@@ -759,16 +865,27 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 
 				found_item = frappe.get_doc("Item", item_codes[0].parent) if item_codes else None
 
-			rate = item.get("price")
-			# If we are applying a Sales Taxes and Charges Template (as opposed to Actual Tax), then we need to
-			# determine if the item price should include tax or not
-			if wc_server.enable_tax_lines_sync and not wc_server.use_actual_tax_type:
-				tax_template = frappe.get_cached_doc(
-					"Sales Taxes and Charges Template",
-					wc_server.sales_taxes_and_charges_template,
+			# If item not found in ERPNext, use placeholder
+			if not found_item:
+				found_item = create_placeholder_item(new_sales_order)
+
+			# If found item is a template (has variants), try to find the default variant
+			if found_item and found_item.has_variants:
+				default_variant = frappe.db.get_value(
+					"Item",
+					{"variant_of": found_item.name, "disabled": 0},
+					"name",
 				)
-				if tax_template.taxes[0].included_in_print_rate:
-					rate = get_tax_inc_price_for_woocommerce_line_item(item)
+				if default_variant:
+					found_item = frappe.get_doc("Item", default_variant)
+				else:
+					# No variant found, use placeholder item instead
+					found_item = create_placeholder_item(new_sales_order)
+
+			rate = float(item.get("total")) / float(item.get("quantity")) if float(item.get("quantity")) else 0
+			# If prices include tax in WooCommerce, calculate tax-inclusive rate
+			if wc_order.prices_include_tax:
+				rate = get_tax_inc_price_for_woocommerce_line_item(item)
 
 			new_sales_order_line = {
 				"item_code": found_item.name,
@@ -787,37 +904,6 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			new_sales_order.append(
 				"items",
 				new_sales_order_line,
-			)
-
-			if wc_server.enable_tax_lines_sync:
-				if not wc_server.use_actual_tax_type:
-					new_sales_order.taxes_and_charges = wc_server.sales_taxes_and_charges_template
-
-					# Trigger taxes calculation
-					new_sales_order.set_missing_lead_customer_details()
-				else:
-					ordered_items_tax = item.get("total_tax")
-					add_tax_details(
-						new_sales_order,
-						ordered_items_tax,
-						"Ordered Item tax",
-						wc_server.tax_account,
-					)
-
-		# If a Shipping Rule is added, shipping charges will be determined by the Shipping Rule. If not, then
-		# get it from the WooCommerce Order
-		if not new_sales_order.shipping_rule:
-			add_tax_details(
-				new_sales_order,
-				wc_order.shipping_tax,
-				"Shipping Tax",
-				wc_server.f_n_f_tax_account,
-			)
-			add_tax_details(
-				new_sales_order,
-				wc_order.shipping_total,
-				"Shipping Total",
-				wc_server.f_n_f_account,
 			)
 
 		# Handle scenario where Woo Order has no items, then manually set the total
@@ -1012,8 +1098,8 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		address.address_line1 = raw_data.get("address_1", "Not Provided")
 		address.address_line2 = raw_data.get("address_2", "Not Provided")
 		address.city = raw_data.get("city", "Not Provided")
-		address.country = frappe.get_value("Country", {"code": raw_data.get("country", "IN").lower()})
-		address.state = raw_data.get("state")
+		address.country = self._get_country(raw_data.get("country", "IN"))
+		address.state = self._get_valid_state(raw_data.get("state"), address.country)
 		address.pincode = raw_data.get("postcode")
 		address.phone = raw_data.get("phone")
 		address.address_title = (
@@ -1023,9 +1109,13 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		)
 		address.is_primary_address = is_primary_address
 		address.is_shipping_address = is_shipping_address
+
+		self._set_gst_category(address)
+
 		address.append("links", {"link_doctype": "Customer", "link_name": customer.name})
 
 		address.flags.ignore_mandatory = True
+		address.flags.ignore_validate = True
 		address.save()
 
 	def update_address(
@@ -1046,20 +1136,143 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		address.address_line1 = raw_data.get("address_1", "Not Provided")
 		address.address_line2 = raw_data.get("address_2", "Not Provided")
 		address.city = raw_data.get("city", "Not Provided")
-		address.country = frappe.get_value("Country", {"code": raw_data.get("country", "IN").lower()})
-		address.state = raw_data.get("state")
+		address.country = self._get_country(raw_data.get("country", "IN"))
+		address.state = self._get_valid_state(raw_data.get("state"), address.country)
 		address.pincode = raw_data.get("postcode")
 		address.phone = raw_data.get("phone")
 		address.address_title = (
-			{customer.customer_name}
+			customer.customer_name
 			if title_convention == "Customer Name only"
 			else f"{customer.name}-{address.address_type}"
 		)
 		address.is_primary_address = is_primary_address
 		address.is_shipping_address = is_shipping_address
 
+		self._set_gst_category(address)
+
 		address.flags.ignore_mandatory = True
+		address.flags.ignore_validate = True
 		address.save()
+
+	@staticmethod
+	def _get_country(country_value: str) -> str:
+		"""
+		Resolve a WooCommerce country value to an ERPNext Country name.
+		Handles both ISO codes (e.g. 'IN') and full names (e.g. 'India').
+		"""
+		if not country_value:
+			country_value = "IN"
+
+		# First try lookup by ISO country code (standard WooCommerce behaviour)
+		country_name = frappe.db.get_value("Country", {"code": country_value.lower()})
+		if country_name:
+			return country_name
+
+		# Fallback: try matching by full country name directly
+		country_name = frappe.db.get_value("Country", {"name": country_value})
+		if country_name:
+			return country_name
+
+		# Last resort: try case-insensitive name match
+		country_name = frappe.db.get_value("Country", {"name": ["like", country_value]})
+		if country_name:
+			return country_name
+
+		# Default to India if nothing matched
+		return "India"
+
+	@staticmethod
+	def _set_gst_category(address):
+		"""
+		Set GST Category on address if india_compliance is installed.
+		Addresses inside India get 'Unregistered', overseas addresses get 'Overseas'.
+		"""
+		if not hasattr(address, "gst_category"):
+			return
+
+		if address.country and address.country != "India":
+			address.gst_category = "Overseas"
+		elif not address.gst_category:
+			address.gst_category = "Unregistered"
+
+	@staticmethod
+	def _get_valid_state(state_value: str, country: str) -> str | None:
+		"""
+		Resolve a WooCommerce state value to a valid ERPNext state name.
+		India Compliance requires exact state names from the predefined list.
+		"""
+		if not state_value or not country:
+			return state_value
+
+		if country != "India":
+			return state_value
+
+		# Try exact match first
+		valid_state = frappe.db.get_value("State", {"name": state_value, "country": "India"})
+		if valid_state:
+			return valid_state
+
+		# Try case-insensitive match
+		valid_state = frappe.db.get_value("State", {"name": ["like", state_value], "country": "India"})
+		if valid_state:
+			return valid_state
+
+		# Common WooCommerce abbreviations/alternate names for Indian states
+		state_aliases = {
+			"AN": "Andaman and Nicobar Islands",
+			"AP": "Andhra Pradesh",
+			"AR": "Arunachal Pradesh",
+			"AS": "Assam",
+			"BR": "Bihar",
+			"CG": "Chhattisgarh",
+			"CH": "Chandigarh",
+			"DD": "Dadra and Nagar Haveli and Daman and Diu",
+			"DL": "Delhi",
+			"GA": "Goa",
+			"GJ": "Gujarat",
+			"HP": "Himachal Pradesh",
+			"HR": "Haryana",
+			"JH": "Jharkhand",
+			"JK": "Jammu and Kashmir",
+			"KA": "Karnataka",
+			"KL": "Kerala",
+			"LA": "Ladakh",
+			"LD": "Lakshadweep",
+			"MH": "Maharashtra",
+			"ML": "Meghalaya",
+			"MN": "Manipur",
+			"MP": "Madhya Pradesh",
+			"MZ": "Mizoram",
+			"NL": "Nagaland",
+			"OD": "Odisha",
+			"OR": "Odisha",
+			"PB": "Punjab",
+			"PY": "Puducherry",
+			"RJ": "Rajasthan",
+			"SK": "Sikkim",
+			"TN": "Tamil Nadu",
+			"TS": "Telangana",
+			"TG": "Telangana",
+			"TR": "Tripura",
+			"UK": "Uttarakhand",
+			"UA": "Uttarakhand",
+			"UP": "Uttar Pradesh",
+			"WB": "West Bengal",
+			# Common alternate spellings
+			"DELHI": "Delhi",
+			"NEW DELHI": "Delhi",
+			"CHATTISGARH": "Chhattisgarh",
+			"ORISSA": "Odisha",
+			"PONDICHERRY": "Puducherry",
+			"UTTARANCHAL": "Uttarakhand",
+		}
+
+		mapped_state = state_aliases.get(state_value.upper().strip())
+		if mapped_state:
+			return mapped_state
+
+		# If nothing matched, return the original value (will rely on flags.ignore_validate)
+		return state_value
 
 
 def get_list_of_wc_orders(
@@ -1234,12 +1447,13 @@ def add_tax_details(sales_order, price, desc, tax_account_head):
 
 def get_tax_inc_price_for_woocommerce_line_item(line_item: dict):
 	"""
-	WooCommerce's Line Item "price" field will always show the tax excluding amount.
-	This function calculates the tax inclusive rate for an item
+	WooCommerce's Line Item "total" field shows the actual line amount excluding tax (after discounts).
+	This function calculates the tax inclusive rate for an item using total + total_tax.
 	"""
-	return (float(line_item.get("subtotal")) + float(line_item.get("subtotal_tax"))) / float(
+	return (float(line_item.get("total")) + float(line_item.get("total_tax"))) / float(
 		line_item.get("quantity")
 	)
+
 
 
 def get_customer_selling_price_list(customer_name: str, currency: str) -> str | None:
@@ -1280,13 +1494,18 @@ def create_placeholder_item(sales_order: SalesOrder):
 	if not frappe.db.exists("Item", "DELETED_WOOCOMMERCE_PRODUCT"):
 		item = frappe.new_doc("Item")
 		item.item_code = "DELETED_WOOCOMMERCE_PRODUCT"
-		item.item_name = "Deletet WooCommerce Product"
-		item.description = "Deletet WooCommerce Product"
+		item.item_name = "Deleted WooCommerce Product"
+		item.description = "Deleted WooCommerce Product"
 		item.item_group = "All Item Groups"
 		item.stock_uom = wc_server.uom
 		item.is_stock_item = 0
 		item.is_fixed_asset = 0
 		item.opening_stock = 0
+
+		# Set country_of_origin if the field exists (required by India Compliance)
+		if frappe.get_meta("Item").has_field("country_of_origin"):
+			item.country_of_origin = "India"
+
 		item.flags.created_by_sync = True
 		item.save()
 	else:

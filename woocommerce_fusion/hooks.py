@@ -152,11 +152,19 @@ scheduler_events = {
 		"woocommerce_fusion.tasks.stock_update.update_stock_levels_for_all_enabled_items_in_background",
 		"woocommerce_fusion.tasks.sync_item_prices.run_item_price_sync_in_background",
 	],
-	"cron": {
-		"* * * * *": [
-			"woocommerce_fusion.tasks.batch.queue_manager.check_and_flush_all_servers",
-		],
-	},
+	"hourly": [
+		"woocommerce_fusion.tasks.stock_update.update_stock_levels_for_all_enabled_items_in_background",
+		"woocommerce_fusion.tasks.sync_sales_orders.sync_woocommerce_orders_modified_since",
+	],
+	# "cron": {
+	# 	"* * * * *": [
+	# 		"woocommerce_fusion.tasks.batch.queue_manager.check_and_flush_all_servers",
+	# 	],
+	# 	"*/30 * * * *": [
+	# 		"woocommerce_fusion.tasks.stock_update.update_stock_levels_for_all_enabled_items_in_background",
+	# 		"woocommerce_fusion.tasks.sync_sales_orders.sync_woocommerce_orders_modified_since",
+	# 	],
+	# },
 	# 	"monthly": [
 	# 		"woocommerce_fusion.tasks.monthly"
 	# 	],
@@ -253,6 +261,7 @@ fixtures = [
 					"Sales Order-custom_attempted_woocommerce_auto_payment_entry",
 					"Sales Order-custom_woocommerce_last_sync_hash",
 					"Sales Order-custom_woocommerce_customer_note",
+					"Sales Order-custom_woocommerce_payment_type",
 					"Address-woocommerce_identifier",
 					"Item-woocommerce_servers",
 					"Item-custom_woocommerce_tab",
