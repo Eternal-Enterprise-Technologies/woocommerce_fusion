@@ -156,6 +156,9 @@ scheduler_events = {
 		"* * * * *": [
 			"woocommerce_fusion.tasks.batch.queue_manager.check_and_flush_all_servers",
 		],
+		"*/30 * * * *": [
+			"woocommerce_fusion.tasks.stock_update.update_stock_levels_for_all_enabled_items_in_background",
+		],
 	},
 	# 	"monthly": [
 	# 		"woocommerce_fusion.tasks.monthly"
