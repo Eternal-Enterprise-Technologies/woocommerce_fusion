@@ -77,9 +77,10 @@ def run_sales_order_sync(
 	# Get ERPNext Sales Order and WooCommerce Order if they exist
 	if woocommerce_order or woocommerce_order_name:
 		if not woocommerce_order:
-			woocommerce_order = frappe.get_doc(
-				{"doctype": "WooCommerce Order", "name": woocommerce_order_name}
-			)
+			woocommerce_order = frappe.get_doc({
+				"doctype": "WooCommerce Order",
+				"name": woocommerce_order_name,
+			})
 			woocommerce_order.load_from_db()
 
 		# Trigger sync
@@ -128,7 +129,6 @@ def bulk_sync_woocommerce_orders(order_names):
 		)
 
 	return {"enqueued": len(order_names)}
-
 
 
 def sync_woocommerce_orders_modified_since(date_time_from=None):
@@ -239,14 +239,12 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			["Sales Order", "woocommerce_server", "is", "set"],
 		]
 		filters.append(["Sales Order", "woocommerce_id", "=", self.woocommerce_order.id])
-		filters.append(
-			[
-				"Sales Order",
-				"woocommerce_server",
-				"=",
-				self.woocommerce_order.woocommerce_server,
-			]
-		)
+		filters.append([
+			"Sales Order",
+			"woocommerce_server",
+			"=",
+			self.woocommerce_order.woocommerce_server,
+		])
 
 		sales_orders = frappe.get_all(
 			"Sales Order",
@@ -624,7 +622,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		self.set_items_in_sales_order(new_sales_order, wc_order)
 		self.set_fee_lines_in_sales_order(new_sales_order, wc_order)
 
-# Let ERPNext / India Compliance calculate taxes automatically based on
+		# Let ERPNext / India Compliance calculate taxes automatically based on
 		# customer address, company address, and tax rules (CGST+SGST or IGST).
 		# We call this BEFORE insert so that taxes_and_charges template and tax rows
 		# are populated. Fields must be set to None (not "") for update_if_missing to work.
@@ -732,9 +730,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 				# Fallback: match by customer_name
 				match_name = company_name if company_name else individual_name
 				if match_name:
-					linked_customer = frappe.get_value(
-						"Customer", {"customer_name": match_name}, "name"
-					)
+					linked_customer = frappe.get_value("Customer", {"customer_name": match_name}, "name")
 
 		if linked_customer:
 			# Attach to the existing account, leaving its own details untouched
@@ -806,15 +802,16 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 
 			# Deleted items will have a "0" for variation_id/product_id
 			if item_woo_com_id != "0":
-				run_item_sync = False
+				should_sync_item = False
 				if wc_server.enable_item_creation:
 					# Auto-create items if setting is enabled
-					run_item_sync = True
+					should_sync_item = True
 				else:
 					# Only sync if item already exists in ERPNext
 					iws = frappe.qb.DocType("Item WooCommerce Server")
 					existing = (
-						frappe.qb.from_(iws)
+						frappe.qb
+						.from_(iws)
 						.where(
 							(iws.woocommerce_id == item_woo_com_id)
 							& (iws.woocommerce_server == woocommerce_site)
@@ -824,9 +821,9 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 					).run()
 
 					if existing:
-						run_item_sync = True
+						should_sync_item = True
 
-				if run_item_sync:
+				if should_sync_item:
 					woocommerce_product_name = generate_woocommerce_record_name_from_domain_and_id(
 						woocommerce_site, item_woo_com_id
 					)
@@ -851,7 +848,8 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 				iws = frappe.qb.DocType("Item WooCommerce Server")
 				itm = frappe.qb.DocType("Item")
 				item_codes = (
-					frappe.qb.from_(iws)
+					frappe.qb
+					.from_(iws)
 					.join(itm)
 					.on(iws.parent == itm.name)
 					.where(
@@ -882,7 +880,9 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 					# No variant found, use placeholder item instead
 					found_item = create_placeholder_item(new_sales_order)
 
-			rate = float(item.get("total")) / float(item.get("quantity")) if float(item.get("quantity")) else 0
+			rate = (
+				float(item.get("total")) / float(item.get("quantity")) if float(item.get("quantity")) else 0
+			)
 			# If prices include tax in WooCommerce, calculate tax-inclusive rate
 			if wc_order.prices_include_tax:
 				rate = get_tax_inc_price_for_woocommerce_line_item(item)
@@ -1453,7 +1453,6 @@ def get_tax_inc_price_for_woocommerce_line_item(line_item: dict):
 	return (float(line_item.get("total")) + float(line_item.get("total_tax"))) / float(
 		line_item.get("quantity")
 	)
-
 
 
 def get_customer_selling_price_list(customer_name: str, currency: str) -> str | None:
