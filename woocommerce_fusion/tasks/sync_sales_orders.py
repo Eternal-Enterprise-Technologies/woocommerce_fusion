@@ -130,7 +130,6 @@ def bulk_sync_woocommerce_orders(order_names):
 	return {"enqueued": len(order_names)}
 
 
-
 def sync_woocommerce_orders_modified_since(date_time_from=None):
 	"""
 	Get list of WooCommerce orders modified since date_time_from
@@ -624,7 +623,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		self.set_items_in_sales_order(new_sales_order, wc_order)
 		self.set_fee_lines_in_sales_order(new_sales_order, wc_order)
 
-# Let ERPNext / India Compliance calculate taxes automatically based on
+		# Let ERPNext / India Compliance calculate taxes automatically based on
 		# customer address, company address, and tax rules (CGST+SGST or IGST).
 		# We call this BEFORE insert so that taxes_and_charges template and tax rows
 		# are populated. Fields must be set to None (not "") for update_if_missing to work.
@@ -732,9 +731,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 				# Fallback: match by customer_name
 				match_name = company_name if company_name else individual_name
 				if match_name:
-					linked_customer = frappe.get_value(
-						"Customer", {"customer_name": match_name}, "name"
-					)
+					linked_customer = frappe.get_value("Customer", {"customer_name": match_name}, "name")
 
 		if linked_customer:
 			# Attach to the existing account, leaving its own details untouched
@@ -882,7 +879,9 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 					# No variant found, use placeholder item instead
 					found_item = create_placeholder_item(new_sales_order)
 
-			rate = float(item.get("total")) / float(item.get("quantity")) if float(item.get("quantity")) else 0
+			rate = (
+				float(item.get("total")) / float(item.get("quantity")) if float(item.get("quantity")) else 0
+			)
 			# If prices include tax in WooCommerce, calculate tax-inclusive rate
 			if wc_order.prices_include_tax:
 				rate = get_tax_inc_price_for_woocommerce_line_item(item)
@@ -1453,7 +1452,6 @@ def get_tax_inc_price_for_woocommerce_line_item(line_item: dict):
 	return (float(line_item.get("total")) + float(line_item.get("total_tax"))) / float(
 		line_item.get("quantity")
 	)
-
 
 
 def get_customer_selling_price_list(customer_name: str, currency: str) -> str | None:
