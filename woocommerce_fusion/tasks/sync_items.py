@@ -2,6 +2,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 from html import unescape
+from typing import ClassVar
 
 import frappe
 from erpnext.stock.doctype.item.item import Item
@@ -84,7 +85,10 @@ def run_item_sync(
 	if woocommerce_product or woocommerce_product_name:
 		if not woocommerce_product:
 			woocommerce_product = frappe.get_doc(
-				{"doctype": "WooCommerce Product", "name": woocommerce_product_name}
+				{
+					"doctype": "WooCommerce Product",
+					"name": woocommerce_product_name,
+				}
 			)
 			woocommerce_product.load_from_db()
 
@@ -222,6 +226,16 @@ def normalise_child_rows(rows, child_doctype: str) -> list[dict]:
 	return [{fieldname: (row.get(fieldname) or None) for fieldname in fieldnames} for row in rows or []]
 
 
+def is_blank_incoming_value(value) -> bool:
+	"""
+	True if a value coming from WooCommerce carries no content, i.e. None or an empty/whitespace
+	string. WooCommerce sends "" (or a meta row with an empty value) for fields a shop manager never
+	filled in, and writing that over a populated ERPNext Item field wipes data the user entered. An
+	empty list/dict is left to the caller - a transform returning [] is a deliberate "clear".
+	"""
+	return value is None or (isinstance(value, str) and not value.strip())
+
+
 def set_mapped_field_value(item: Item, fieldname: str, value) -> bool:
 	"""
 	Write a mapped value to an ERPNext Item field. Returns True only if the value actually changed.
@@ -266,15 +280,16 @@ class SynchroniseItem(SynchroniseWooCommerce):
 	# When True, sync hash bookkeeping is deferred to the BatchProcessor at flush time
 	defer_sync_hash: bool = False
 
-
 	# Mapping of WooCommerce attribute names to ERPNext Item Attribute names
-	WC_TO_ERPNEXT_ATTRIBUTE_MAP = {
+	WC_TO_ERPNEXT_ATTRIBUTE_MAP: ClassVar[dict[str, str]] = {
 		"Colour": "Elle Plating Tone",
 		"Dimension": "Size",
 	}
 
 	# Reverse mapping: ERPNext Item Attribute names to WooCommerce attribute names
-	ERPNEXT_TO_WC_ATTRIBUTE_MAP = {v: k for k, v in WC_TO_ERPNEXT_ATTRIBUTE_MAP.items()}
+	ERPNEXT_TO_WC_ATTRIBUTE_MAP: ClassVar[dict[str, str]] = {
+		v: k for k, v in WC_TO_ERPNEXT_ATTRIBUTE_MAP.items()
+	}
 
 	def __init__(
 		self,
@@ -622,7 +637,9 @@ class SynchroniseItem(SynchroniseWooCommerce):
 				{
 					# Reverse map ERPNext attribute name to WooCommerce attribute name
 					"name": self.ERPNEXT_TO_WC_ATTRIBUTE_MAP.get(row.attribute, row.attribute),
-					"slug": self.ERPNEXT_TO_WC_ATTRIBUTE_MAP.get(row.attribute, row.attribute).lower().replace(" ", "_"),
+					"slug": self.ERPNEXT_TO_WC_ATTRIBUTE_MAP.get(row.attribute, row.attribute)
+					.lower()
+					.replace(" ", "_"),
 					"option": row.attribute_value,
 				}
 				for row in item.item.attributes
@@ -682,7 +699,9 @@ class SynchroniseItem(SynchroniseWooCommerce):
 				row.attribute = wc_attribute["name"]
 
 				# Map WooCommerce attribute name to ERPNext attribute name
-				row.attribute = self.WC_TO_ERPNEXT_ATTRIBUTE_MAP.get(wc_attribute["name"], wc_attribute["name"])
+				row.attribute = self.WC_TO_ERPNEXT_ATTRIBUTE_MAP.get(
+					wc_attribute["name"], wc_attribute["name"]
+				)
 
 				if wc_product.type == "variation":
 					row.attribute_value = wc_attribute["option"]
@@ -781,7 +800,10 @@ class SynchroniseItem(SynchroniseWooCommerce):
 				else:
 					# Create a Item Attribute
 					item_attribute = frappe.get_doc(
-						{"doctype": "Item Attribute", "attribute_name": erpnext_attr_name}
+						{
+							"doctype": "Item Attribute",
+							"attribute_name": erpnext_attr_name,
+						}
 					)
 
 				# Get list of attribute options.
@@ -792,9 +814,7 @@ class SynchroniseItem(SynchroniseWooCommerce):
 				)
 
 				# Get existing attribute values for comparison
-				existing_values = set(
-					val.attribute_value for val in item_attribute.item_attribute_values
-				)
+				existing_values = set(val.attribute_value for val in item_attribute.item_attribute_values)
 
 				# Append only new values that don't already exist
 				for option in options:
@@ -847,6 +867,11 @@ class SynchroniseItem(SynchroniseWooCommerce):
 						woocommerce_product=woocommerce_product_dict,
 					)
 					if new_value is SKIP:
+						continue
+
+					if is_blank_incoming_value(new_value):
+						# WooCommerce holds no value for this field, so leave the Item's current
+						# value alone rather than wiping a value the user entered in ERPNext.
 						continue
 
 					if set_mapped_field_value(item, erpnext_item_field_name, new_value):

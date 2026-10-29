@@ -90,7 +90,10 @@ class TestApplyTransform(UnitTestCase):
 
 	def test_apply_transform_passes_the_row_and_direction_through(self):
 		row = frappe._dict(
-			{"value_transform_method": "dummy", "woocommerce_field_name": "$.meta_data[0].value"}
+			{
+				"value_transform_method": "dummy",
+				"woocommerce_field_name": "$.meta_data[0].value",
+			}
 		)
 
 		with patch("frappe.get_hooks", return_value=DUMMY_HOOKS):
@@ -198,7 +201,10 @@ class TestChildTableFieldMapping(UnitTestCase):
 		product.woocommerce_server = "example.com"
 		product.woocommerce_id = 1
 		product.meta_data = json.dumps(
-			[{"id": 1, "key": "_other", "value": "x"}, {"id": 2, "key": META_KEY, "value": value}]
+			[
+				{"id": 1, "key": "_other", "value": "x"},
+				{"id": 2, "key": META_KEY, "value": value},
+			]
 		)
 		return product
 
@@ -376,6 +382,35 @@ class TestScalarFieldMappingDirtiness(UnitTestCase):
 		"""
 		self.row.woocommerce_field_name = "$.meta_data[?key='_never_written'].value"
 		self.sync.woocommerce_product.meta_data = json.dumps([])
+
+		item_dirty, item = self.set_item_fields(frappe.get_doc({"doctype": "Item", "description": "Keep me"}))
+
+		self.assertFalse(item_dirty)
+		self.assertEqual(item.description, "Keep me")
+
+	def test_an_empty_string_from_woocommerce_leaves_the_item_alone(self):
+		"""
+		WooCommerce sends "" for a field a shop manager never filled in. Writing that over a
+		populated ERPNext field wipes a value the user entered, so it is left alone.
+		"""
+		self.sync.woocommerce_product.short_description = ""
+
+		item_dirty, item = self.set_item_fields(frappe.get_doc({"doctype": "Item", "description": "Keep me"}))
+
+		self.assertFalse(item_dirty)
+		self.assertEqual(item.description, "Keep me")
+
+	def test_a_whitespace_only_value_from_woocommerce_leaves_the_item_alone(self):
+		self.sync.woocommerce_product.short_description = "   "
+
+		item_dirty, item = self.set_item_fields(frappe.get_doc({"doctype": "Item", "description": "Keep me"}))
+
+		self.assertFalse(item_dirty)
+		self.assertEqual(item.description, "Keep me")
+
+	def test_an_empty_meta_value_from_woocommerce_leaves_the_item_alone(self):
+		self.row.woocommerce_field_name = "$.meta_data[?key='_item_detail'].value"
+		self.sync.woocommerce_product.meta_data = json.dumps([{"key": "_item_detail", "value": ""}])
 
 		item_dirty, item = self.set_item_fields(frappe.get_doc({"doctype": "Item", "description": "Keep me"}))
 
