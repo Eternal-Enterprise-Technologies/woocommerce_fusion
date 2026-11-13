@@ -424,3 +424,49 @@ class TestRunItemSyncFromHook(UnitTestCase):
 				enqueue_call.kwargs.get("enqueue_after_commit"),
 				f"{enqueue_call.args[0]} is enqueued before the transaction commits",
 			)
+
+
+class TestLinkItemBySku(UnitTestCase):
+	def _sync_with_product(self, woocommerce_id: str, sku: str) -> SynchroniseItem:
+		sync = SynchroniseItem(servers=Mock())
+		sync.woocommerce_product = frappe._dict(
+			woocommerce_server="site1.example.com", woocommerce_id=woocommerce_id, sku=sku
+		)
+		return sync
+
+	def _item_linked_to(self, woocommerce_id: str | None):
+		item = frappe.get_doc({"doctype": "Item", "item_code": "ITEM-SKU-1"})
+		row = item.append("woocommerce_servers", {"woocommerce_server": "site1.example.com"})
+		row.woocommerce_id = woocommerce_id
+		item.save = Mock()
+		item.add_comment = Mock()
+		return item
+
+	def _run(self, item, sync: SynchroniseItem):
+		server = frappe._dict(name="site1.example.com", match_items_by_sku=1)
+		with (
+			patch("frappe.get_cached_doc", return_value=server),
+			patch("frappe.get_all", return_value=[item.item_code]),
+			patch("frappe.get_doc", return_value=item),
+		):
+			sync.get_erpnext_item_by_sku()
+
+	def test_changed_woocommerce_id_is_updated_on_the_item(self):
+		item = self._item_linked_to("100")
+		sync = self._sync_with_product(woocommerce_id="200", sku="ITEM-SKU-1")
+
+		self._run(item, sync)
+
+		self.assertEqual(item.woocommerce_servers[0].woocommerce_id, "200")
+		item.save.assert_called_once()
+		item.add_comment.assert_called_once()
+		self.assertIs(sync.item.item, item)
+
+	def test_unlinked_item_gets_the_woocommerce_id_without_a_change_comment(self):
+		item = self._item_linked_to(None)
+		sync = self._sync_with_product(woocommerce_id="200", sku="ITEM-SKU-1")
+
+		self._run(item, sync)
+
+		self.assertEqual(item.woocommerce_servers[0].woocommerce_id, "200")
+		item.add_comment.assert_not_called()
