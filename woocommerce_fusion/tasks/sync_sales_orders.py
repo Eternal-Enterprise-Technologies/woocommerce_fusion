@@ -77,10 +77,12 @@ def run_sales_order_sync(
 	# Get ERPNext Sales Order and WooCommerce Order if they exist
 	if woocommerce_order or woocommerce_order_name:
 		if not woocommerce_order:
-			woocommerce_order = frappe.get_doc({
-				"doctype": "WooCommerce Order",
-				"name": woocommerce_order_name,
-			})
+			woocommerce_order = frappe.get_doc(
+				{
+					"doctype": "WooCommerce Order",
+					"name": woocommerce_order_name,
+				}
+			)
 			woocommerce_order.load_from_db()
 
 		# Trigger sync
@@ -239,12 +241,14 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			["Sales Order", "woocommerce_server", "is", "set"],
 		]
 		filters.append(["Sales Order", "woocommerce_id", "=", self.woocommerce_order.id])
-		filters.append([
-			"Sales Order",
-			"woocommerce_server",
-			"=",
-			self.woocommerce_order.woocommerce_server,
-		])
+		filters.append(
+			[
+				"Sales Order",
+				"woocommerce_server",
+				"=",
+				self.woocommerce_order.woocommerce_server,
+			]
+		)
 
 		sales_orders = frappe.get_all(
 			"Sales Order",
@@ -810,8 +814,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 					# Only sync if item already exists in ERPNext
 					iws = frappe.qb.DocType("Item WooCommerce Server")
 					existing = (
-						frappe.qb
-						.from_(iws)
+						frappe.qb.from_(iws)
 						.where(
 							(iws.woocommerce_id == item_woo_com_id)
 							& (iws.woocommerce_server == woocommerce_site)
@@ -848,8 +851,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 				iws = frappe.qb.DocType("Item WooCommerce Server")
 				itm = frappe.qb.DocType("Item")
 				item_codes = (
-					frappe.qb
-					.from_(iws)
+					frappe.qb.from_(iws)
 					.join(itm)
 					.on(iws.parent == itm.name)
 					.where(
