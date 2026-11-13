@@ -186,13 +186,16 @@ def recalculate_taxes_and_charges(sales_order_name: str):
 
 	# Re-add the preserved Actual tax rows (shipping/freight charges)
 	for row in actual_tax_rows:
-		so.append("taxes", {
-			"charge_type": row.charge_type,
-			"account_head": row.account_head,
-			"description": row.description,
-			"tax_amount": row.tax_amount,
-			"cost_center": row.cost_center,
-		})
+		so.append(
+			"taxes",
+			{
+				"charge_type": row.charge_type,
+				"account_head": row.account_head,
+				"description": row.description,
+				"tax_amount": row.tax_amount,
+				"cost_center": row.cost_center,
+			},
+		)
 
 	# Recalculate totals to include the re-added Actual rows
 	so.calculate_taxes_and_totals()

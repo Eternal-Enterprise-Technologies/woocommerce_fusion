@@ -442,13 +442,20 @@ class SynchroniseItem(SynchroniseWooCommerce):
 			),
 			None,
 		)
-		if row and row.woocommerce_id:
-			# Already linked to a different product on this server; leave it alone
-			return
-
 		if not row:
 			row = item.append("woocommerce_servers", {"woocommerce_server": wc_server.name})
-		row.woocommerce_id = str(self.woocommerce_product.woocommerce_id)
+
+		new_woocommerce_id = str(self.woocommerce_product.woocommerce_id)
+		# WooCommerce SKUs are unique, so a different ID on the same SKU means the product was
+		# re-created. The old ID is stale, so point the Item at the new one.
+		if row.woocommerce_id and str(row.woocommerce_id) != new_woocommerce_id:
+			item.add_comment(
+				"Info",
+				_("WooCommerce ID on {0} changed from {1} to {2}").format(
+					wc_server.name, row.woocommerce_id, new_woocommerce_id
+				),
+			)
+		row.woocommerce_id = new_woocommerce_id
 		row.enabled = 1
 		item.flags.created_by_sync = True
 		item.save(ignore_permissions=True)
