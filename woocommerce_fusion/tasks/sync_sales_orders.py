@@ -637,6 +637,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		new_sales_order.company_gstin = None
 		new_sales_order.billing_address_gstin = None
 		new_sales_order.set_missing_lead_customer_details()
+		self.mark_taxes_included_in_rate(new_sales_order, wc_order)
 		new_sales_order.calculate_taxes_and_totals()
 
 		# Fallback: if India Compliance didn't set a template (e.g. missing Company GSTIN),
@@ -644,6 +645,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		if not new_sales_order.taxes_and_charges and wc_server.sales_taxes_and_charges_template:
 			new_sales_order.taxes_and_charges = wc_server.sales_taxes_and_charges_template
 			new_sales_order.set_taxes()
+			self.mark_taxes_included_in_rate(new_sales_order, wc_order)
 			new_sales_order.calculate_taxes_and_totals()
 
 		# Now add shipping/freight charges on top of the calculated taxes
@@ -914,6 +916,19 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			new_sales_order.grand_total = float(wc_order.total)
 			new_sales_order.base_rounded_total = float(wc_order.total)
 			new_sales_order.rounded_total = float(wc_order.total)
+
+	@staticmethod
+	def mark_taxes_included_in_rate(sales_order, wc_order) -> None:
+		"""
+		Item rates are tax-inclusive when WooCommerce "prices_include_tax" is set, so flag the
+		template tax rows as "Included in Print Rate" to stop ERPNext adding tax on top.
+		"""
+		if not wc_order.prices_include_tax:
+			return
+		for tax in sales_order.get("taxes"):
+			# ERPNext does not allow "Actual" or "On Previous Row Total" rows to be inclusive
+			if tax.charge_type in ("On Net Total", "On Previous Row Amount"):
+				tax.included_in_print_rate = 1
 
 	def set_fee_lines_in_sales_order(self, new_sales_order, wc_order):
 		"""
