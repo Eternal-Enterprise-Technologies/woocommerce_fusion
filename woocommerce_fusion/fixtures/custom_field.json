@@ -878,7 +878,7 @@
     "name": "Sales Order-custom_woocommerce_payment_type",
     "no_copy": 0,
     "non_negative": 0,
-    "options": "\nCOD Payment\nCOD - Not confirmed\nPrepaid - Payment not confirmed\nPrepaid Payment",
+    "options": "\nCOD Payment\nCOD - Not confirmed\nPrepaid - Payment not confirmed\nPrepaid Payment\nOnline Payment - Confirmed\nOnline Payment - Not Confirmed\nCredit Limit\nRazorpay",
     "permlevel": 0,
     "precision": "",
     "print_hide": 0,
