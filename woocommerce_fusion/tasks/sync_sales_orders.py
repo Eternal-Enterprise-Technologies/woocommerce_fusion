@@ -1128,6 +1128,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		address.is_shipping_address = is_shipping_address
 
 		self._set_gst_category(address)
+		self._set_gst_state(address)
 
 		address.append("links", {"link_doctype": "Customer", "link_name": customer.name})
 
@@ -1166,6 +1167,7 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 		address.is_shipping_address = is_shipping_address
 
 		self._set_gst_category(address)
+		self._set_gst_state(address)
 
 		address.flags.ignore_mandatory = True
 		address.flags.ignore_validate = True
@@ -1211,6 +1213,25 @@ class SynchroniseSalesOrder(SynchroniseWooCommerce):
 			address.gst_category = "Overseas"
 		elif not address.gst_category:
 			address.gst_category = "Unregistered"
+
+	@staticmethod
+	def _set_gst_state(address):
+		"""
+		Set GST State and State Number on address, as India Compliance does in Address validate
+		(skipped here because addresses are saved with ignore_validate). Without these,
+		India Compliance falls back to the company GSTIN state for Place of Supply.
+		"""
+		if not hasattr(address, "gst_state_number"):
+			return
+
+		from india_compliance.gst_india.constants import STATE_NUMBERS
+
+		if address.country == "India" and address.state in STATE_NUMBERS:
+			address.gst_state = address.state
+			address.gst_state_number = STATE_NUMBERS[address.state]
+		else:
+			address.gst_state = None
+			address.gst_state_number = None
 
 	@staticmethod
 	def _get_valid_state(state_value: str, country: str) -> str | None:
