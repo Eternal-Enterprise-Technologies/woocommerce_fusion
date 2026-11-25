@@ -765,6 +765,28 @@ class TestLineItemMetaDisplayValues(IntegrationTestCase):
 		)
 
 
+class TestSetGstState(IntegrationTestCase):
+	def test_indian_address_gets_gst_state_and_number(self):
+		address = frappe._dict(country="India", state="Maharashtra", gst_state_number=None)
+		SynchroniseSalesOrder._set_gst_state(address)
+		self.assertEqual(address.gst_state, "Maharashtra")
+		self.assertEqual(address.gst_state_number, "27")
+
+	def test_unknown_state_leaves_gst_state_empty(self):
+		address = frappe._dict(country="India", state="Not A State", gst_state_number=None)
+		SynchroniseSalesOrder._set_gst_state(address)
+		self.assertIsNone(address.gst_state)
+		self.assertIsNone(address.gst_state_number)
+
+	def test_overseas_address_clears_gst_state(self):
+		address = frappe._dict(
+			country="United States", state="Texas", gst_state="Texas", gst_state_number="27"
+		)
+		SynchroniseSalesOrder._set_gst_state(address)
+		self.assertIsNone(address.gst_state)
+		self.assertIsNone(address.gst_state_number)
+
+
 def create_price_list(name: str, currency: str) -> str:
 	if frappe.db.exists("Price List", name):
 		return name
